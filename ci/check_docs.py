@@ -4,6 +4,8 @@
 Checks (stdlib only):
   1. Every docs/*.md has exactly one H1. The GitHub-wiki navigation file
      docs/wiki/_Sidebar.md is exempt (it is a link list, not a document).
+     Lines inside fenced code blocks (``` or ~~~) are code, not Markdown:
+     a "# comment" there is not an H1, and link syntax there is not a link.
   2. Every relative link in every doc resolves to an existing file in the
      repo. GitHub-wiki-style extensionless links (e.g. `[Home](Home)`)
      resolve to `<page>.md` next to the linking file. Absolute URLs
@@ -29,6 +31,7 @@ H1_EXEMPT = {os.path.join("docs", "wiki", "_Sidebar.md")}
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 SECURITY_TXT = os.path.join(REPO_ROOT, ".well-known", "security.txt")
 ABS_URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def doc_files():
@@ -45,11 +48,32 @@ def doc_files():
     return found
 
 
-def check_h1(path, rel):
-    errors = []
+def prose_lines(path):
+    """(line number, text) for each line outside fenced code blocks.
+
+    A fence opens with 3+ backticks or tildes (up to 3 spaces of indent) and
+    closes with a line of the same character, at least as long, and nothing
+    else. An unclosed fence runs to the end of the file (CommonMark).
+    """
     with open(path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
-    h1s = [n + 1 for n, line in enumerate(lines) if line.startswith("# ")]
+    fence = None
+    for n, line in enumerate(lines, 1):
+        match = FENCE_RE.match(line)
+        if fence is None:
+            if match:
+                fence = match.group(1)
+            else:
+                yield n, line
+        elif (match and match.group(1)[0] == fence[0]
+              and len(match.group(1)) >= len(fence)
+              and not line.strip().lstrip(fence[0])):
+            fence = None
+
+
+def check_h1(path, rel):
+    errors = []
+    h1s = [n for n, line in prose_lines(path) if line.startswith("# ")]
     if rel in H1_EXEMPT:
         return errors
     if len(h1s) != 1:
@@ -63,9 +87,7 @@ def check_h1(path, rel):
 def check_links(path, rel):
     errors = []
     base = os.path.dirname(path)
-    with open(path, encoding="utf-8") as fh:
-        lines = fh.read().splitlines()
-    for n, line in enumerate(lines, 1):
+    for n, line in prose_lines(path):
         for match in LINK_RE.finditer(line):
             target = match.group(1).strip()
             if not target or ABS_URL_RE.match(target) or target.startswith("#"):
